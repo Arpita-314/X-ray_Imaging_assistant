@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main application for the GPU-accelerated scientific research assistant.
+Fixed main application for the GPU-accelerated scientific research assistant.
 Provides CLI interface for querying the RAG system and generating X-ray simulations.
 """
 
@@ -8,12 +8,24 @@ import argparse
 import os
 import sys
 import torch
+import matplotlib
+matplotlib.use('TkAgg')  # Set backend before importing pyplot
 import matplotlib.pyplot as plt
 from typing import Optional
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Import our modules
-from retrieval import setup_retrieval_system, RAGChain
-from simulation import XRaySimulator, plot_simulation_results, run_gpu_benchmark
+try:
+    from retrieval import setup_retrieval_system, RAGChain
+    from simulation import XRaySimulator, plot_simulation_results, run_gpu_benchmark
+except ImportError as e:
+    print(f"❌ Import error: {e}")
+    print("Make sure all required files are in the same directory:")
+    print("- retrieval.py")
+    print("- simulation.py") 
+    print("- knowledge_base.md")
+    sys.exit(1)
 
 
 class ScientificAssistant:
@@ -38,7 +50,9 @@ class ScientificAssistant:
             print("✓ RAG system initialized successfully")
         except Exception as e:
             print(f"✗ Failed to initialize RAG system: {str(e)}")
-            sys.exit(1)
+            print("Continuing without RAG functionality...")
+            self.retriever = None
+            self.rag_chain = None
         
         # Setup X-ray simulator
         try:
@@ -46,10 +60,15 @@ class ScientificAssistant:
             print("✓ X-ray simulator initialized successfully")
         except Exception as e:
             print(f"✗ Failed to initialize simulator: {str(e)}")
-            sys.exit(1)
+            print("Continuing without simulation functionality...")
+            self.simulator = None
         
         print("=" * 50)
-        print("System ready!")
+        if self.retriever or self.simulator:
+            print("System ready! (Some features may be limited)")
+        else:
+            print("❌ Critical error: No functional components available")
+            sys.exit(1)
     
     def answer_query(self, query: str, include_simulation: bool = True, 
                     phantom_type: str = 'shepp_logan', angle: float = 0.0) -> dict:
@@ -68,17 +87,20 @@ class ScientificAssistant:
         results = {}
         
         # Generate text response using RAG
-        print("Generating response using RAG system...")
-        try:
-            response = self.rag_chain.generate_response(query)
-            results['response'] = response
-            print("✓ Response generated successfully")
-        except Exception as e:
-            print(f"✗ Failed to generate response: {str(e)}")
-            results['response'] = "Sorry, I couldn't generate a response to your query."
+        if self.rag_chain:
+            print("Generating response using RAG system...")
+            try:
+                response = self.rag_chain.generate_response(query)
+                results['response'] = response
+                print("✓ Response generated successfully")
+            except Exception as e:
+                print(f"✗ Failed to generate response: {str(e)}")
+                results['response'] = f"Sorry, I encountered an error: {str(e)}"
+        else:
+            results['response'] = "RAG system not available. Please check your setup."
         
         # Generate X-ray simulation if requested
-        if include_simulation:
+        if include_simulation and self.simulator:
             print("Running X-ray simulation...")
             try:
                 phantom, projection = self.simulator.simulate_xray(
@@ -103,6 +125,8 @@ class ScientificAssistant:
             except Exception as e:
                 print(f"✗ Failed to run simulation: {str(e)}")
                 results['simulation_error'] = str(e)
+        elif include_simulation:
+            results['simulation_error'] = "Simulator not available"
         
         return results
     
@@ -116,7 +140,7 @@ class ScientificAssistant:
         print("  - Ask any question about X-ray imaging or medical physics")
         print("  - Type 'sim:chest' or 'sim:shepp' to specify phantom type")
         print("  - Type 'angle:X' to set projection angle (degrees)")
-        print("  - Type 'nosim' to disable simulation")
+        print("  - Type 'nosim' to toggle simulation on/off")
         print("  - Type 'benchmark' to run GPU performance test")
         print("  - Type 'quit' to exit")
         print("-"*60)
@@ -135,7 +159,10 @@ class ScientificAssistant:
                     break
                 
                 if query.lower() == 'benchmark':
-                    run_gpu_benchmark(self.simulator)
+                    if self.simulator:
+                        run_gpu_benchmark(self.simulator)
+                    else:
+                        print("❌ Simulator not available")
                     continue
                 
                 # Parse commands
@@ -197,13 +224,17 @@ class ScientificAssistant:
                     print(f"Image size: {params['size']}x{params['size']}")
                     
                     # Save plot
-                    timestamp = str(int(torch.rand(1).item() * 10000))
+                    import random
+                    timestamp = str(random.randint(1000, 9999))
                     filename = f"xray_simulation_{timestamp}.png"
                     results['figure'].savefig(filename, dpi=150, bbox_inches='tight')
                     print(f"✓ Simulation plot saved as: {filename}")
                     
-                    # Show plot
+                    # Show plot (non-blocking)
                     plt.show(block=False)
+                
+                elif include_simulation and 'simulation_error' in results:
+                    print(f"❌ Simulation error: {results['simulation_error']}")
                 
                 print("\n" + "-"*50)
                 
@@ -211,7 +242,9 @@ class ScientificAssistant:
                 print("\n\nGoodbye!")
                 break
             except Exception as e:
-                print(f"❌ Error: {str(e)}")
+                print(f"❌ Unexpected error: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
 
 def main():
@@ -271,7 +304,10 @@ def main():
     for file_path in args.knowledge_files:
         if not os.path.exists(file_path):
             print(f"❌ Knowledge file not found: {file_path}")
-            sys.exit(1)
+            print("Creating a minimal knowledge base...")
+            with open(file_path, 'w') as f:
+                f.write("# X-ray Imaging\n\nX-ray imaging uses electromagnetic radiation to create images of internal body structures.")
+            print(f"✓ Created basic knowledge file: {file_path}")
     
     # Initialize assistant
     try:
@@ -281,12 +317,17 @@ def main():
         )
     except Exception as e:
         print(f"❌ Failed to initialize assistant: {str(e)}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
     
     # Handle benchmark mode
     if args.benchmark:
         print("\nRunning GPU benchmark...")
-        run_gpu_benchmark(assistant.simulator, size=512, num_runs=20)
+        if assistant.simulator:
+            run_gpu_benchmark(assistant.simulator, size=512, num_runs=20)
+        else:
+            print("❌ Simulator not available for benchmark")
         return
     
     # Handle single query mode
